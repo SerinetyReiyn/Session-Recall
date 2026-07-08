@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Index database and its WAL sidecars (regenerable from the archive)
+data/recall.db
+data/recall.db-wal
+data/recall.db-shm
+
+# Environment
+.env

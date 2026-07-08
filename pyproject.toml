@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "session-recall"
+dynamic = ["version"]
+description = "Local search and surgical read over the Claude Code transcript archive."
+requires-python = ">=3.11"
+dependencies = ["mcp>=1.0"]
+
+[project.scripts]
+session-recall = "session_recall.cli:main"
+session-recall-mcp = "session_recall.server:main"
+session-recall-web = "session_recall.webui:main"
+
+[tool.hatch.version]
+path = "session_recall/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["session_recall"]
