@@ -27,16 +27,17 @@ from .parser_codex import (codex_project_key, parse_codex_file,
                            read_codex_session_meta)
 from .store import Store
 
-# The transcript archive root. Overridable via env var for testing, but the
-# value below is the verified location on this machine.
+# The Claude Code transcript archive root. Defaults to ~/.claude/projects (the
+# standard location on any machine); override with SESSION_RECALL_ROOT.
 DEFAULT_ROOT = Path(
-    os.environ.get("SESSION_RECALL_ROOT", r"C:\Users\Serin\.claude\projects")
+    os.environ.get("SESSION_RECALL_ROOT", str(Path.home() / ".claude" / "projects"))
 )
 
 # Codex keeps its session rollouts under ~/.codex. This is the second corpus, so
 # both Claude Code and Codex share one index and can see each other's history.
+# Override with SESSION_RECALL_CODEX_HOME.
 DEFAULT_CODEX_HOME = Path(
-    os.environ.get("SESSION_RECALL_CODEX_HOME", r"C:\Users\Serin\.codex")
+    os.environ.get("SESSION_RECALL_CODEX_HOME", str(Path.home() / ".codex"))
 )
 
 
