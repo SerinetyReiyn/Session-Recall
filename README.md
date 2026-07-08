@@ -4,6 +4,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
+![License](https://img.shields.io/badge/license-MIT-green)
 ![Status](https://img.shields.io/badge/status-working-brightgreen)
 
 When a long agent session auto-compacts, the in-context history is replaced by a
@@ -16,7 +17,7 @@ Session Recall builds a local full-text index over those transcripts and exposes
 it as tools, so any session can search everything you have ever done and pull
 back the exact piece it needs, instead of starting over.
 
-```
+```text
 you (after a compaction):  "what did we conclude about the ECONNRESET failures?"
 the agent:                  search_history("ECONNRESET", project="patch-manager")
                             -> finds the session, reads the two messages that mattered,
@@ -110,7 +111,7 @@ also run `session-recall-web`.
 
 ## How it works
 
-```
+```text
 transcripts on disk  ->  parser  ->  store (SQLite + FTS5)  ->  server / cli / web ui
   ~/.claude, ~/.codex     normalize    incremental index,        capped tools and
   (read only)             each format   uuid-deduped, WAL         a browser view
@@ -126,7 +127,7 @@ over the same store.
 All optional. Set as environment variables.
 
 | Variable | Default | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `SESSION_RECALL_ROOT` | `~/.claude/projects` | Claude Code transcript root |
 | `SESSION_RECALL_CODEX_HOME` | `~/.codex` | Codex home (indexes `sessions/` and `archived_sessions/`) |
 | `SESSION_RECALL_DB` | `data/recall.db` in the repo | Index database path |
@@ -166,5 +167,5 @@ python -m unittest discover -s tests -t . -v
 ## Notes
 
 This started as a personal tool and is shared in case it is useful to someone
-else. It is not affiliated with Anthropic or OpenAI. No license has been chosen
-yet, so if you want to build on it, open an issue.
+else. It is not affiliated with Anthropic or OpenAI. Licensed under the MIT
+License; see [LICENSE](LICENSE).
