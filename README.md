@@ -42,6 +42,13 @@ the agent:                  search_history("ECONNRESET", project="patch-manager"
   before a search, so there is no daemon and no scheduled task.
 - **Local only.** No network egress, no telemetry. See [Privacy](#privacy).
 
+Reading and contributing are separate. Any MCP host can be pointed at the index
+to *search* it without adding to it: Claude Desktop, for example, registers the
+server in its own `claude_desktop_config.json` and can then recall the shared
+Claude Code and Codex history. The contributing corpora (the transcripts that get
+indexed) are Claude Code and Codex, since both write clean local transcript files;
+Claude Desktop's conversations live in the cloud and are not part of the corpus.
+
 Backend: Python standard library `sqlite3` with FTS5. The only third-party
 dependency is the official MCP SDK, and only the MCP server needs it.
 
