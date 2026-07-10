@@ -369,7 +369,11 @@ def ingest_claudia(db_path, export_path, dry_run=False, verbose=False):
         session_meta = {}
         for conv in iter_conversations(raw, warnings):
             stats["conversations_seen"] += 1
-            parsed = parse_conversation(conv, warnings)
+            try:
+                parsed = parse_conversation(conv, warnings)
+            except Exception:
+                # One odd conversation must never abort the whole batch.
+                parsed = None
             if parsed is None:
                 stats["malformed"] += 1
                 continue

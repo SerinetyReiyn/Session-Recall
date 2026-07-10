@@ -219,10 +219,15 @@ class Store:
         metadata captured during parsing. Used by the tailing corpora."""
         # Exclude sidecar pointer rows: they carry a real session_id but are not
         # conversational messages, so counting them would inflate message_count
-        # and their file-mtime timestamps could skew the time bounds.
+        # and their file-mtime timestamps could skew the time bounds. Exclude
+        # claudia too: those sessions are owned by the ingest (upsert_sessions),
+        # which applies a conversation-level last_ts fallback this recompute lacks;
+        # recomputing them here from MAX(ts) would null a timestamp-less session's
+        # last_ts and break the ingest skip-fast.
         rows = self.conn.execute(
             "SELECT session_id, MIN(ts) AS started, MAX(ts) AS last, COUNT(*) AS n "
             "FROM messages WHERE session_id IS NOT NULL AND entry_type IS NOT 'sidecar' "
+            "AND source IS NOT 'claudia' "
             "GROUP BY session_id"
         ).fetchall()
         for row in rows:

@@ -250,6 +250,94 @@ class TestClaudiaIngest(unittest.TestCase):
         finally:
             store.close()
 
+    def test_plain_string_content_is_indexed(self):
+        # A message whose content is a bare string (older vintage) must not be lost.
+        _, db = make_env()
+        convs = [conversation("conv-s", "String content", [
+            {"uuid": "s1", "sender": "human", "created_at": "2026-01-01T00:00:01Z",
+             "content": "why does the flywheel wobble at speed"},
+        ])]
+        path = tmpfile("conversations.json")
+        write_json(path, convs)
+        ingest_claudia(db, str(path))
+        store = Store(db)
+        try:
+            self.assertTrue(store.search("flywheel wobble"))
+            prompt = store.conn.execute(
+                "SELECT first_user_prompt FROM sessions WHERE session_id='conv-s'").fetchone()[0]
+            self.assertIn("flywheel", prompt)
+        finally:
+            store.close()
+
+    def test_tool_payload_stored_in_full_not_truncated(self):
+        # Claudia has no raw-line recovery, so tool payloads must be stored whole.
+        _, db = make_env()
+        big = ("filler " * 3000) + "endmarker_zebra"  # far past the old 2000 cap
+        convs = [conversation("conv-t", "Big tool", [
+            message("assistant", [tool_result(big)], "2026-01-01T00:00:01Z", "t1"),
+        ])]
+        path = tmpfile("conversations.json")
+        write_json(path, convs)
+        ingest_claudia(db, str(path))
+        store = Store(db)
+        try:
+            self.assertTrue(store.search("endmarker_zebra"))  # word at the very end
+            row = store.conn.execute(
+                "SELECT is_truncated, char_len FROM messages WHERE session_id='conv-t'").fetchone()
+            self.assertEqual(row["is_truncated"], 0)
+            self.assertGreater(row["char_len"], 5000)
+        finally:
+            store.close()
+
+    def test_mixed_timestamp_types_do_not_abort(self):
+        _, db = make_env()
+        convs = [conversation("conv-m", "Mixed ts", [
+            {"uuid": "m1", "sender": "human", "created_at": "2026-01-01T00:00:01Z",
+             "content": [tb("first message about lighthouses")]},
+            {"uuid": "m2", "sender": "assistant", "created_at": 1735689600,  # int, not str
+             "content": [tb("second reply")]},
+        ])]
+        path = tmpfile("conversations.json")
+        write_json(path, convs)
+        stats, _ = ingest_claudia(db, str(path))  # must not raise
+        self.assertEqual(stats["conversations_new"], 1)
+        store = Store(db)
+        try:
+            self.assertTrue(store.search("lighthouses"))
+        finally:
+            store.close()
+
+    def test_wrapper_object_reports_no_spurious_malformed_lines(self):
+        # A pretty-printed single/wrapper object starts with '{' but is not JSONL.
+        _, db = make_env()
+        wrapper = {"conversations": sample_convs()}
+        path = tmpfile("conversations.json")
+        Path(path).write_text(json.dumps(wrapper, indent=2), encoding="utf-8")
+        stats, warnings = ingest_claudia(db, str(path))
+        self.assertEqual(stats["conversations_new"], 2)
+        self.assertNotIn("malformed_lines", warnings)
+
+    def test_index_pass_preserves_claudia_skip_fast(self):
+        # A tailing-corpus index pass must not recompute claudia sessions and null
+        # a timestamp-less conversation's last_ts, which would break skip-fast.
+        from session_recall.indexer import run_index
+        root, db = make_env()
+        convs = [conversation("conv-nots", "No message timestamps", [
+            {"uuid": "n1", "sender": "human", "content": [tb("a note about telescopes")]},
+        ], updated="2026-02-02T00:00:00Z")]
+        path = tmpfile("conversations.json")
+        write_json(path, convs)
+        ingest_claudia(db, str(path))
+        run_index(db, root=root, full=False, verbose=False)  # empty claude corpus
+        store = Store(db)
+        try:
+            self.assertEqual(store.get_session("conv-nots")["last_ts"], "2026-02-02T00:00:00Z")
+        finally:
+            store.close()
+        stats, _ = ingest_claudia(db, str(path))
+        self.assertEqual(stats["skipped_unchanged"], 1)
+        self.assertEqual(stats["messages_inserted"], 0)
+
     def test_inspect_reports_structure_without_content(self):
         path = tmpfile("conversations.json")
         write_json(path, sample_convs())

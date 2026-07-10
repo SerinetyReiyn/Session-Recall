@@ -28,8 +28,6 @@ import json
 import zipfile
 from pathlib import Path
 
-from .parser import TOOL_RESULT_CAP, TOOL_USE_INPUT_CAP, _truncate
-
 SOURCE = "claudia"
 PROJECT_KEY = "claude_desktop"
 
@@ -39,8 +37,11 @@ PROJECT_KEY = "claude_desktop"
 # way the Claude Code and Codex parsers index these kinds:
 #   text        -> the block's "text"
 #   thinking    -> the block's "thinking" (Claude's reasoning; often long)
-#   tool_use    -> name + a capped rendering of the input
-#   tool_result -> a capped rendering of the result content
+#   tool_use    -> name + a rendering of the input
+#   tool_result -> a rendering of the result content
+# Tool renderings are stored in full (not capped): unlike the tailing corpora,
+# the export is fully parsed once at ingest and there is no raw-line recovery
+# path afterward, so a capped tool payload could never be re-expanded.
 # Skipped (no searchable conversational text): flag (moderation markers),
 # and message-level attachments/files (binary or file references). Verified that
 # text-only extraction would drop about 64 percent of messages (the thinking and
@@ -95,6 +96,7 @@ def iter_conversations(raw_text, warnings):
 
     # JSONL: one conversation object per line (the file starts with '{').
     any_parsed = False
+    line_errors = 0
     for line in raw_text.splitlines():
         line = line.strip()
         if not line:
@@ -102,11 +104,16 @@ def iter_conversations(raw_text, warnings):
         try:
             conv = json.loads(line)
         except Exception:
-            warnings["malformed_lines"] = warnings.get("malformed_lines", 0) + 1
+            line_errors += 1
             continue
         any_parsed = True
         yield conv
     if any_parsed:
+        # Only genuine JSONL counts its bad lines. A pretty-printed single object
+        # or wrapper fails every physical line here; that tally is discarded when
+        # we fall through to the whole-text parse below.
+        if line_errors:
+            warnings["malformed_lines"] = warnings.get("malformed_lines", 0) + line_errors
         return
 
     # Fallback: not JSONL after all (for example a single pretty-printed object
@@ -145,21 +152,24 @@ def _flatten_tool_result(content) -> str:
     return json.dumps(content, default=str, ensure_ascii=False)
 
 
-def _render_message(msg):
-    """Return (text, truncated) for one message, concatenating its content blocks.
+def _render_message(msg) -> str:
+    """Return the searchable text for one message, concatenating its content.
 
     content may be a plain string or a list of blocks. See the module header for
     the block-type mapping. The message-level "text" field (present on older or
     simple messages) is used as the base when it is non-empty; otherwise the base
-    comes from the text blocks. Thinking and tool renderings are always appended.
+    comes from the text blocks (or a bare-string content). Thinking and tool
+    renderings are always appended. Nothing is capped.
     """
     content = msg.get("content")
     text_blocks = []
     thinking = []
     tools = []
-    truncated = False
 
-    if isinstance(content, list):
+    if isinstance(content, str):
+        if content:
+            text_blocks.append(content)
+    elif isinstance(content, list):
         for block in content:
             if isinstance(block, str):
                 text_blocks.append(block)
@@ -184,13 +194,9 @@ def _render_message(msg):
                     rendered = json.dumps(raw_input, default=str, ensure_ascii=False)
                 else:
                     rendered = ""
-                rendered, cut = _truncate(rendered, TOOL_USE_INPUT_CAP)
-                truncated = truncated or cut
                 tools.append(f"{name} {rendered}".strip())
             elif btype == "tool_result":
                 rendered = _flatten_tool_result(block.get("content"))
-                rendered, cut = _truncate(rendered, TOOL_RESULT_CAP)
-                truncated = truncated or cut
                 if rendered:
                     tools.append(rendered)
             # flag blocks and any other type carry no conversational text.
@@ -201,8 +207,7 @@ def _render_message(msg):
     else:
         base = "\n".join(t for t in text_blocks if t)
     parts = [base] + thinking + tools
-    text = "\n".join(p for p in parts if p)
-    return text, truncated
+    return "\n".join(p for p in parts if p)
 
 
 def _message_uuid(conv_uuid, msg, index) -> str:
@@ -243,9 +248,11 @@ def parse_conversation(conv, warnings):
             role = entry_type = "assistant"
         else:
             role = entry_type = "user"
-        text, truncated = _render_message(msg)
+        text = _render_message(msg)
         ts = msg.get("created_at") or msg.get("timestamp") or msg.get("updated_at")
-        if ts:
+        # Only string timestamps feed min/max, so a stray non-string value cannot
+        # raise a str-vs-int comparison. The raw ts is still stored on the record.
+        if isinstance(ts, str) and ts:
             timestamps.append(ts)
         if first_user_prompt is None and role == "user" and text:
             first_user_prompt = text
@@ -260,7 +267,7 @@ def parse_conversation(conv, warnings):
             "tool_name": None,
             "cwd": None,
             "char_len": len(text),
-            "is_truncated": 1 if truncated else 0,
+            "is_truncated": 0,
             "text": text,
             "line_no": i,
         })
