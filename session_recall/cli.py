@@ -144,6 +144,40 @@ def _cmd_status(args):
             print(f"    {row['sessions']:3d} sessions  {row['files']:5d} files  {row['project']}")
 
 
+def _cmd_ingest_claudia(args):
+    from .parser_claude_export import inspect_export
+    from .indexer import ingest_claudia
+
+    if args.inspect:
+        try:
+            shape = inspect_export(args.path)
+        except Exception as exc:
+            print(f"Could not read export at {args.path}: {exc}")
+            return
+        print(f"Structural inspection of {args.path} (no content values shown):")
+        for key, value in shape.items():
+            print(f"  {key}: {value}")
+        return
+
+    db = Path(args.db)
+    db.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        stats, warnings = ingest_claudia(str(db), args.path, dry_run=args.dry_run)
+    except Exception as exc:
+        print(f"Ingest failed: {exc}")
+        return
+    mode = " (dry run, nothing written)" if args.dry_run else ""
+    print(f"Claudia ingest{mode}:")
+    print(f"  conversations seen    : {stats.get('conversations_seen', 0)}")
+    print(f"    new                 : {stats.get('conversations_new', 0)}")
+    print(f"    updated             : {stats.get('conversations_updated', 0)}")
+    print(f"    skipped (unchanged) : {stats.get('skipped_unchanged', 0)}")
+    print(f"    malformed           : {stats.get('malformed', 0)}")
+    print(f"  messages inserted     : {stats.get('messages_inserted', 0)}")
+    if warnings:
+        print(f"  warnings              : {warnings}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="session_recall", description="Search the Claude Code transcript archive.")
     parser.add_argument("--db", default=str(DEFAULT_DB), help="path to the index database")
@@ -160,12 +194,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("--limit", type=int, default=10, help="max hits to return")
     p_search.add_argument("--cap", type=int, default=DEFAULT_PER_SESSION_CAP,
                           help="max hits from any one session (diversity); 0 disables the cap")
-    p_search.add_argument("--source", default=None, choices=["claude", "codex"],
-                          help="filter by corpus: claude or codex (default: both)")
+    p_search.add_argument("--source", default=None, choices=["claude", "codex", "claudia"],
+                          help="filter by corpus: claude, codex, or claudia (default: all)")
     p_search.set_defaults(func=_cmd_search)
 
     p_status = sub.add_parser("status", help="show index statistics")
     p_status.set_defaults(func=_cmd_status)
+
+    p_ingest = sub.add_parser("ingest-claudia",
+                              help="ingest a claude.ai data export (the claudia corpus)")
+    p_ingest.add_argument("path", help="path to the export zip, conversations.json, or conversations.jsonl")
+    p_ingest.add_argument("--dry-run", action="store_true", help="parse and report, write nothing")
+    p_ingest.add_argument("--inspect", action="store_true",
+                          help="print the file's structural shape only, never content values")
+    p_ingest.set_defaults(func=_cmd_ingest_claudia)
 
     return parser
 

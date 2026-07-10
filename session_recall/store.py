@@ -185,51 +185,76 @@ class Store:
             )
         return True
 
-    def rebuild_sessions(self, session_meta: dict):
-        """Populate the sessions table from indexed messages plus captured meta.
-
-        Counts and timestamp bounds come from the deduped messages table so they
-        are correct even if the same uuid appeared in more than one file.
-        session_meta carries project_key, cwd, and first_user_prompt captured
-        during parsing.
+    def _write_session(self, sid, started, last, n, meta):
+        """Upsert one session row. Counts and time bounds are passed in (computed
+        from the deduped messages table). Captured metadata (project_key, source,
+        cwd, first_user_prompt, summary) fills in on insert and is preserved on
+        conflict where it must not regress.
         """
-        # Exclude sidecar pointer rows: they carry a real session_id but are
-        # not conversational messages, so counting them would inflate
-        # message_count and their file-mtime timestamps could skew the time
-        # bounds. IS NOT keeps any (currently nonexistent) NULL entry_type rows.
+        prompt = meta.get("first_user_prompt")
+        if prompt:
+            prompt = prompt[:FIRST_PROMPT_CAP]
+        # first_user_prompt: the stored value wins on conflict, because the true
+        # first prompt is captured from the start of a session, whereas an
+        # incremental append only sees a mid-session prompt. summary refreshes to
+        # the newest non-null value (a claude.ai conversation can be re-titled).
+        self.conn.execute(
+            "INSERT INTO sessions "
+            "(session_id, project_key, source, cwd, started_ts, last_ts, message_count, "
+            " first_user_prompt, summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET "
+            "project_key=COALESCE(excluded.project_key, sessions.project_key), "
+            "source=COALESCE(excluded.source, sessions.source), "
+            "cwd=COALESCE(excluded.cwd, sessions.cwd), "
+            "started_ts=excluded.started_ts, last_ts=excluded.last_ts, "
+            "message_count=excluded.message_count, "
+            "first_user_prompt=COALESCE(sessions.first_user_prompt, excluded.first_user_prompt), "
+            "summary=COALESCE(excluded.summary, sessions.summary)",
+            (sid, meta.get("project_key"), meta.get("source"), meta.get("cwd"),
+             started, last, n, prompt, meta.get("summary")),
+        )
+
+    def rebuild_sessions(self, session_meta: dict):
+        """Recompute every session row from the deduped messages table plus the
+        metadata captured during parsing. Used by the tailing corpora."""
+        # Exclude sidecar pointer rows: they carry a real session_id but are not
+        # conversational messages, so counting them would inflate message_count
+        # and their file-mtime timestamps could skew the time bounds.
         rows = self.conn.execute(
             "SELECT session_id, MIN(ts) AS started, MAX(ts) AS last, COUNT(*) AS n "
             "FROM messages WHERE session_id IS NOT NULL AND entry_type IS NOT 'sidecar' "
             "GROUP BY session_id"
         ).fetchall()
         for row in rows:
-            sid = row["session_id"]
-            meta = session_meta.get(sid, {})
-            prompt = meta.get("first_user_prompt")
-            if prompt:
-                prompt = prompt[:FIRST_PROMPT_CAP]
-            # Counts and time bounds always come from the (deduped) messages
-            # table. The captured metadata (project_key, cwd, first_user_prompt)
-            # is only present for sessions touched this pass. For first_user_prompt
-            # the stored value wins on conflict: a prior pass that parsed from
-            # offset 0 captured the true first prompt, whereas an incremental
-            # append only sees a mid-session prompt, so the existing value must
-            # not be overwritten. The fallback still populates it from the tail
-            # when no value was stored yet (no user turn seen before).
-            self.conn.execute(
-                "INSERT INTO sessions "
-                "(session_id, project_key, source, cwd, started_ts, last_ts, message_count, "
-                " first_user_prompt, summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(session_id) DO UPDATE SET "
-                "project_key=COALESCE(excluded.project_key, sessions.project_key), "
-                "source=COALESCE(excluded.source, sessions.source), "
-                "cwd=COALESCE(excluded.cwd, sessions.cwd), "
-                "started_ts=excluded.started_ts, last_ts=excluded.last_ts, "
-                "message_count=excluded.message_count, "
-                "first_user_prompt=COALESCE(sessions.first_user_prompt, excluded.first_user_prompt)",
-                (sid, meta.get("project_key"), meta.get("source"), meta.get("cwd"),
-                 row["started"], row["last"], row["n"], prompt, None),
-            )
+            self._write_session(row["session_id"], row["started"], row["last"],
+                                row["n"], session_meta.get(row["session_id"], {}))
+        self.conn.commit()
+
+    def get_session(self, session_id):
+        """Return a session's stored (session_id, last_ts, message_count, source)
+        row, or None. Used by the claudia ingest skip-fast path."""
+        return self.conn.execute(
+            "SELECT session_id, last_ts, message_count, source FROM sessions "
+            "WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+
+    def upsert_sessions(self, session_meta: dict):
+        """Recompute and upsert ONLY the given sessions (targeted), so sessions
+        not touched this pass keep their rows untouched. Used by the claudia
+        snapshot ingest, which must leave unchanged conversations alone."""
+        for sid, meta in session_meta.items():
+            row = self.conn.execute(
+                "SELECT MIN(ts), MAX(ts), COUNT(*) FROM messages "
+                "WHERE session_id = ? AND entry_type IS NOT 'sidecar'",
+                (sid,),
+            ).fetchone()
+            # Fall back to the conversation-level timestamps when the messages
+            # carry none, so last_ts is never NULL and the skip-fast path on
+            # re-ingest can compare against it.
+            started = row[0] or meta.get("started_ts")
+            last = row[1] or meta.get("last_ts")
+            self._write_session(sid, started, last, row[2], meta)
         self.conn.commit()
 
     def set_meta(self, key: str, value):
@@ -250,10 +275,20 @@ class Store:
             return row[0]
 
     def clear_all(self):
-        """Drop indexed content for a full rebuild. Does not touch the schema."""
+        """Drop indexed content for a full rebuild. Does not touch the schema.
+
+        The claudia corpus is preserved: unlike the claude and codex corpora, it
+        is not rebuildable from a live local source (it comes from a manual
+        claude.ai export), and the index is meant to be an archive, so a full
+        rebuild of the tailing corpora must not wipe it.
+        """
         self.conn.executescript(
-            "DELETE FROM messages_fts; DELETE FROM messages; "
-            "DELETE FROM sessions; DELETE FROM files; DELETE FROM meta;"
+            "DELETE FROM messages_fts WHERE rowid IN "
+            "  (SELECT id FROM messages WHERE source IS NOT 'claudia'); "
+            "DELETE FROM messages WHERE source IS NOT 'claudia'; "
+            "DELETE FROM sessions WHERE source IS NOT 'claudia'; "
+            "DELETE FROM files WHERE source IS NOT 'claudia'; "
+            "DELETE FROM meta;"
         )
         self.conn.commit()
 

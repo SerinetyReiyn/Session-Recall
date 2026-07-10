@@ -11,3 +11,8 @@ data/recall.db-shm
 
 # Environment
 .env
+
+# Claude.ai account exports: real conversation data, never commit. The ingest
+# reads these read-only; they must never enter the (public) repo.
+claudia_export/
+*.zip

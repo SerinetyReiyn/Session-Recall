@@ -90,6 +90,34 @@ Authoritative phase specs are the `prompts\phase_*.md` files authored by Claudia
   `read_messages` can now expand a truncated Codex tool row to full text via
   `read_full_text_codex`, dispatched on the row's `source`.
 
+- 0.7.0 (from `prompts\phase_0.7.0_claudia_export_ingest.md`, authored by Claudia):
+  third corpus, `source="claudia"`, the claude.ai / Claude Desktop conversations.
+  There is no local transcript store for the desktop app (the IndexedDB cache
+  holds no conversation text), so ground truth is the official account export
+  (claude.ai Settings > Privacy > Export data). New `parser_claude_export.py`
+  sniffs zip vs conversations.json vs .jsonl, and `indexer.ingest_claudia` does an
+  idempotent snapshot upsert: skip-fast when a conversation's newest message is
+  not newer than the stored `last_ts`, uuid dedupe for the rest, targeted
+  `store.upsert_sessions` so unchanged conversations are untouched, and the archive
+  is kept (deleted conversations are not removed; `clear_all` preserves claudia so
+  an `index --full` does not wipe it). CLI `ingest-claudia <path> [--dry-run]
+  [--inspect]`; `--inspect` prints structure only, never content. Store gained a
+  `source` column already in 0.6; sessions.summary now carries the conversation
+  title. Verified against a REAL export (via `--inspect`, no content printed):
+  919 conversations, 24,134 messages, of which 8,680 have searchable text. The one
+  spec deviation, flagged and deliberate: the prompt said index text-bearing
+  blocks, but `--inspect` showed text-only would drop about 64 percent of messages
+  (the thinking and tool turns), so the parser renders text, thinking, tool_use,
+  and tool_result blocks (parity with the Code and Codex corpora); the remaining
+  empty messages are genuinely empty shells in the export. All fixtures synthetic;
+  the real export lives under a git-ignored `claudia_export/` and never enters the
+  repo.
+  Format assumptions still worth watching on future exports (what `--inspect`
+  guards): the array-vs-jsonl vintage, the `chat_messages` key, the block-type set
+  (text / thinking / tool_use / tool_result / flag), and `sender` values
+  (human / assistant). A conversation-level `summary` field also exists distinct
+  from `name`; we use `name` as the session summary per the prompt.
+
 ## Note on canonical queries and this build session
 
 Testing this project from within a live Code session pollutes the index with the

@@ -94,8 +94,9 @@ def search_history(query: str, project: str = None, role: str = None,
     Use this first, before re-deriving a solution, design decision, or diagnosis.
     Two to four distinctive keywords work best; wrap an exact phrase in double
     quotes (for example '"comprehensive review"'). Results are diversified so no
-    single session dominates. The archive spans both Claude Code and Codex
-    sessions, so history from either tool is searchable.
+    single session dominates. The archive spans Claude Code, Codex, and Claudia
+    (claude.ai / Claude Desktop) sessions, so history from any of them is
+    searchable; a search with no source filter includes all three.
 
     Args:
         query: Search terms. Quoted substrings are matched as exact phrases.
@@ -103,7 +104,8 @@ def search_history(query: str, project: str = None, role: str = None,
         role: Optional role filter: user, assistant, system, or summary.
         limit: Max hits to return (capped).
         per_session_cap: Max hits from any one session (diversity).
-        source: Optional corpus filter: 'claude' or 'codex'. None searches both.
+        source: Optional corpus filter: 'claude', 'codex', or 'claudia'. None
+            searches all of them.
 
     Returns:
         A dict with the ranked hits (snippet, session_id, uuid, timestamp,

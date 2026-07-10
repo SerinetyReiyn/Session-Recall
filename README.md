@@ -1,6 +1,6 @@
 # Session Recall
 
-**Searchable long-term memory for [Claude Code](https://claude.com/claude-code) and [Codex](https://openai.com/codex/).**
+**Searchable long-term memory for [Claude Code](https://claude.com/claude-code), [Codex](https://openai.com/codex/), and [claude.ai](https://claude.ai).**
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
@@ -26,10 +26,11 @@ the agent:                  search_history("ECONNRESET", project="patch-manager"
 
 ## Highlights
 
-- **One index over two tools.** Claude Code transcripts (`~/.claude/projects`) and
-  Codex rollouts (`~/.codex/sessions`) are indexed into a single database, so each
-  assistant can recall the other's history and its own. Every hit is tagged with
-  its `source` (`claude` or `codex`).
+- **One index across three sources.** Claude Code transcripts (`~/.claude/projects`),
+  Codex rollouts (`~/.codex/sessions`), and Claudia (claude.ai / Claude Desktop
+  conversations, imported from an account export) go into a single database, so
+  each assistant can recall the others' history and its own. Every hit is tagged
+  with its `source` (`claude`, `codex`, or `claudia`).
 - **Built to protect the context window, not flood it.** Every tool response is
   hard-capped. The intended flow is search, then outline, then read only the
   specific messages you need. It never dumps a whole session back into context.
@@ -45,9 +46,10 @@ the agent:                  search_history("ECONNRESET", project="patch-manager"
 Reading and contributing are separate. Any MCP host can be pointed at the index
 to *search* it without adding to it: Claude Desktop, for example, registers the
 server in its own `claude_desktop_config.json` and can then recall the shared
-Claude Code and Codex history. The contributing corpora (the transcripts that get
-indexed) are Claude Code and Codex, since both write clean local transcript files;
-Claude Desktop's conversations live in the cloud and are not part of the corpus.
+history. The contributing corpora are Claude Code and Codex (tailed live from
+local transcript files) plus Claudia, the claude.ai / Claude Desktop
+conversations, which live in the cloud and are imported from an account export
+(see [The Claudia corpus](#the-claudia-corpus-claudeai--claude-desktop)).
 
 Backend: Python standard library `sqlite3` with FTS5. The only third-party
 dependency is the official MCP SDK, and only the MCP server needs it.
@@ -116,18 +118,45 @@ only) with search, session browsing, outlines, and a full-text reader. Double-cl
 **`Stop Session_Recall Web UI.bat`** to stop it. From an activated venv you can
 also run `session-recall-web`.
 
+## The Claudia corpus (claude.ai / Claude Desktop)
+
+Claude Desktop and claude.ai keep their conversations in the cloud, not as local
+transcript files, so there is nothing to tail. Instead you import an official
+account export, tagged `source = "claudia"`, as a third corpus.
+
+Request the export from claude.ai: Settings > Privacy > Export data. A download
+link arrives by email (it expires, so download it promptly). The export is a zip
+containing `conversations.json` (or `conversations.jsonl` on some vintages). Then
+ingest it:
+
+```text
+session-recall ingest-claudia PATH_TO_export.zip            # or the conversations.json
+session-recall ingest-claudia PATH_TO_export.zip --dry-run  # parse and report, write nothing
+session-recall ingest-claudia PATH_TO_export.zip --inspect  # print structure only, never content
+```
+
+Ingest is idempotent: re-importing the same export changes nothing, and a newer
+export only appends the messages a conversation gained. Because the export is a
+periodic snapshot, not a live file, this is a manual command (not part of the
+automatic index pass), and the claudia corpus is preserved across an
+`index --full` rebuild since it cannot be regenerated from a local source. Each
+message's text, thinking, and tool blocks are all indexed. Keep the export file
+outside the repo; it holds private conversation data.
+
 ## How it works
 
 ```text
-transcripts on disk  ->  parser  ->  store (SQLite + FTS5)  ->  server / cli / web ui
-  ~/.claude, ~/.codex     normalize    incremental index,        capped tools and
-  (read only)             each format   uuid-deduped, WAL         a browser view
+transcripts / export  ->  parser  ->  store (SQLite + FTS5)  ->  server / cli / web ui
+  ~/.claude, ~/.codex,     normalize    incremental index,        capped tools and
+  claude.ai export         each format  uuid-deduped, WAL         a browser view
+  (read only)
 ```
 
-Two parsers normalize each tool's on-disk format into one record shape; the store
-holds them in an FTS5 index keyed for surgical retrieval; the indexer tails files
-incrementally and dedupes by uuid; and the server, CLI, and web UI are three views
-over the same store.
+A parser per source normalizes each on-disk format into one record shape; the
+store holds them in an FTS5 index keyed for surgical retrieval; the indexer tails
+the Claude Code and Codex files incrementally (and imports the Claudia export on
+demand), deduping by uuid; and the server, CLI, and web UI are three views over
+the same store.
 
 ## Configuration
 

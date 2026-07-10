@@ -337,6 +337,80 @@ def _index_sidecars(store, root, stats, full, verbose):
                 print(f"  ERROR on sidecar {path}: {exc}")
 
 
+def ingest_claudia(db_path, export_path, dry_run=False, verbose=False):
+    """Ingest a claude.ai account export (the claudia corpus) into the index.
+
+    A snapshot import, not a tailing pass: re-ingesting a full-account dump is the
+    normal mode, so it is idempotent. A conversation whose newest message is not
+    newer than the stored session's last_ts is skipped without touching rows;
+    otherwise its messages are inserted (uuid dedupe drops the ones already there)
+    and its session is refreshed. Deleted conversations stop appearing in exports
+    but their indexed rows are kept: the index is an archive.
+
+    Returns (stats, warnings) dicts.
+    """
+    from .parser_claude_export import (iter_conversations, load_export_text,
+                                       parse_conversation)
+
+    stats = Counter()
+    # Pre-seed so the returned stats always carry these keys, even at zero.
+    for key in ("conversations_seen", "conversations_new", "conversations_updated",
+                "skipped_unchanged", "malformed", "messages_inserted", "stored"):
+        stats[key] = 0
+    warnings = {}
+    raw = load_export_text(export_path)  # raises if no conversations file is found
+
+    store = Store(db_path)
+    try:
+        file_id = None
+        if not dry_run:
+            file_id = store.get_or_create_file(
+                str(Path(export_path).resolve()), "claude_desktop", source="claudia")
+        session_meta = {}
+        for conv in iter_conversations(raw, warnings):
+            stats["conversations_seen"] += 1
+            parsed = parse_conversation(conv, warnings)
+            if parsed is None:
+                stats["malformed"] += 1
+                continue
+            sid, meta, records = parsed
+
+            existing = store.get_session(sid)
+            newest = meta.get("last_ts")
+            if (existing is not None and existing["last_ts"]
+                    and newest and newest <= existing["last_ts"]):
+                stats["skipped_unchanged"] += 1
+                continue
+
+            if existing is None:
+                stats["conversations_new"] += 1
+            else:
+                stats["conversations_updated"] += 1
+
+            if dry_run:
+                # Report what would land without writing. Exact dedupe would need
+                # per-uuid checks; report the conversation's message count.
+                stats["messages_inserted"] += len(records)
+                continue
+
+            for record in records:
+                if store.insert_message(record, file_id):
+                    stats["stored"] += 1
+                    stats["messages_inserted"] += 1
+            session_meta[sid] = meta
+
+        if not dry_run:
+            if session_meta:
+                store.upsert_sessions(session_meta)
+            store.commit()
+    finally:
+        store.close()
+
+    if verbose:
+        print(f"  claudia ingest: {dict(stats)} warnings={warnings}")
+    return dict(stats), warnings
+
+
 def _index_codex(store, codex_home, stats, session_meta, full, verbose, progress_every):
     """Index the Codex rollout corpus into the shared database (source='codex').
 
